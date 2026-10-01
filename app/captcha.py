@@ -38,6 +38,40 @@ class CaptchaSolveError(Exception):
     """
 
 
+# env 覆盖生效提示的去重键（值变化时再提示一次），避免每枚 token 刷屏
+_logged_override: str | None = None
+
+
+def resolve_solver_params(config: dict) -> tuple[str, str, str]:
+    """求解三元组单一真源：env 逃生门 > 上游 client/configs > CAPTCHA_DEFAULTS。
+
+    _solve_one 与 /claim/captcha-config（手动领取，pool 断供时的唯一兜底）都必须
+    走这里，否则前端拿的是未覆盖的远端坏值。返回值同时决定 solver argv、
+    _Token.region 以及上报上游的 X-Aliyun-Captcha-Verify-Region 头，三者不会分叉。
+    """
+    overrides = settings.captcha_env_overrides()
+    defaults = constants.CAPTCHA_DEFAULTS
+    scene = overrides.get("sceneId") or config.get("sceneId") or defaults["sceneId"]
+    region = overrides.get("region") or config.get("region") or defaults["region"]
+    prefix = overrides.get("prefix") or config.get("prefix") or defaults["prefix"]
+    return scene, region, prefix
+
+
+def _log_override(scene: str, region: str, prefix: str) -> None:
+    overrides = settings.captcha_env_overrides()
+    global _logged_override
+    if not overrides:
+        _logged_override = None
+        return
+    signature = f"{scene}|{region}|{prefix}"
+    if signature == _logged_override:
+        return
+    _logged_override = signature
+    changed = ", ".join(f"{key}={value}" for key, value in sorted(overrides.items()))
+    logs.warn("captcha", f"prefix/region/sceneId 被环境变量强制覆盖: {changed}"
+                       "（上游配置已失效，撤掉覆盖前请确认线上口径）")
+
+
 class _Token:
     __slots__ = ("param", "region", "born_at")
 
@@ -201,11 +235,8 @@ class CaptchaManager:
 
     # ── 求解 ─────────────────────────────────────────────────────────────────
     async def _solve_one(self, config: dict) -> _Token | None:
-        import os
-        # 环境变量强制覆盖（运维逃生门：上游下发坏配置时手动切 prefix/region）
-        prefix = os.getenv("ZCODE_CAPTCHA_PREFIX") or config.get("prefix") or constants.CAPTCHA_DEFAULTS["prefix"]
-        region = os.getenv("ZCODE_CAPTCHA_REGION") or config.get("region") or constants.CAPTCHA_DEFAULTS["region"]
-        scene  = config.get("sceneId") or constants.CAPTCHA_DEFAULTS["sceneId"]
+        scene, region, prefix = resolve_solver_params(config)
+        _log_override(scene, region, prefix)
 
         last_err: str | None = None
         for attempt in range(1, settings.CAPTCHA_SOLVE_RETRIES + 1):
@@ -215,8 +246,9 @@ class CaptchaManager:
                 last_err = str(err)
                 param = None
             if param:
-                if attempt > 1:
-                    logs.ok("captcha", f"求解成功（第 {attempt} 次尝试）")
+                suffix = f"（第 {attempt} 次尝试）" if attempt > 1 else ""
+                logs.ok("captcha", f"求解成功{suffix} scene={scene} region={region} prefix={prefix}")
+                # region 用生效值（可能被 env 覆盖）：与喂给 solver 的完全一致
                 return _Token(param, region)
             self._last_error = last_err
             logs.warn("captcha", f"第 {attempt}/{settings.CAPTCHA_SOLVE_RETRIES} 次求解未果，重试…")
