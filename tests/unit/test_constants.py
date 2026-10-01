@@ -48,9 +48,10 @@ def test_billing_version_and_activation():
 
 
 def test_captcha_defaults_match_zcode2api():
-    # 实测线上 captcha region=cn（非 zcode2api 的 sgp 兜底），以线上为准
+    # prefix=8ab4 / region=cn 为实测可过值；上游曾下发 prefix=no8xfe（配 region=sgp），
+    # 被阿里云无痕验证以 F009（bot 环境）全拒导致 token 池断供，故兜底不再用 no8xfe。
     assert constants.CAPTCHA_DEFAULTS == {
-        "enabled": True, "prefix": "no8xfe", "region": "cn", "sceneId": "11xygtvd",
+        "enabled": True, "prefix": "8ab4", "region": "cn", "sceneId": "11xygtvd",
     }
 
 

@@ -511,15 +511,20 @@ async def claim(payload: dict = Body(default=None)):
 
 @router.get("/claim/captcha-config")
 async def claim_captcha_config():
-    """手动领取用：阿里验证码 SDK 初始化参数（前端浏览器内完成人机验证）。"""
-    from ..captcha import captcha_manager
+    """手动领取用：阿里验证码 SDK 初始化参数（前端浏览器内完成人机验证）。
+
+    必须走 resolve_solver_params：pool 断供时手动领取是唯一兜底，直接透传远端
+    配置会让 ZCODE_CAPTCHA_* 逃生门在这条路径上失效。
+    """
+    from ..captcha import captcha_manager, resolve_solver_params
 
     config = await captcha_manager.fetch_config()
+    scene_id, region, prefix = resolve_solver_params(config)
     return {
         "enabled": bool(config.get("enabled", True)),
-        "scene_id": config.get("sceneId") or "",
-        "region": config.get("region") or "",
-        "prefix": config.get("prefix") or "",
+        "scene_id": scene_id,
+        "region": region,
+        "prefix": prefix,
     }
 
 
