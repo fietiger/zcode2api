@@ -64,6 +64,7 @@ CREATE TABLE claim_history (
 | `CLAIM_POLL_INTERVAL` / `CLAIM_COOLDOWN` | 300s / 600s | 领取轮询 / 失败退避 |
 | `ZAI_UPSTREAM_URL` / `ZAI_FALLBACK_URL` / `BIGMODEL_UPSTREAM_URL` | 官方端点 | 上游可覆写（测试注入用） |
 | `ZCODE_NODE_PATH` / `ZCODE_CAPTCHA_TIMEOUT` / `ZCODE_CAPTCHA_RETRIES` | node / 40s / 4 | 验证码求解 |
+| `ZCODE_CAPTCHA_PREFIX` / `ZCODE_CAPTCHA_REGION` / `ZCODE_CAPTCHA_SCENE_ID` | 空（不覆盖） | 验证码逃生门：强制覆盖求解三元组，优先级 env > 上游 `client/configs` > `CAPTCHA_DEFAULTS`（空值/纯空白视为未设置）。`REGION` 会同时作为上报上游的 `X-Aliyun-Captcha-Verify-Region` 头，改错值领取与对话一起 3007。上游配置恢复后务必撤掉并重启 |
 
 ## 3. enc:v1 编解码（ZCode 客户端凭证格式，zsw zcrypto.rs）
 

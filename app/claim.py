@@ -20,7 +20,7 @@ import time
 import httpx
 
 from . import constants, logs, settings
-from .captcha import captcha_manager
+from .captcha import captcha_manager, resolve_solver_params
 from .models import Account, Status
 
 
@@ -386,7 +386,9 @@ async def claim(account: Account, plan_id: str | None = None) -> dict:
     for attempt in (1, 2):
         verify_param, verify_region = await captcha_manager.get_verify_param()
         config = await captcha_manager.fetch_config()
-        headers = _claim_headers(account, verify_param, verify_region or config.get("region"))
+        # token 未带 region（legacy solver）时，兜底也走单一真源，env 覆盖才不会漏
+        _, report_region, _ = resolve_solver_params(config)
+        headers = _claim_headers(account, verify_param, verify_region or report_region)
 
         body = await _billing_request(
             account, "POST", "/billing/claim",

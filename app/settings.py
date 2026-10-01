@@ -33,6 +33,19 @@ def _int(env_name: str, default: int) -> int:
         return default
 
 
+def _env_text(env_name: str) -> str | None:
+    """字符串型 env 覆盖：strip 后为空（未设置 / 空串 / 纯空白）一律视为未覆盖。
+
+    captcha 逃生门的值会直接进 solver argv 与上报上游的 region 头，
+    `ZCODE_CAPTCHA_PREFIX=" "` 这类配置必须回落到远端配置/默认值而不是
+    带着空白值去求解。
+    """
+    raw = os.getenv(env_name)
+    if raw is None:
+        return None
+    return raw.strip() or None
+
+
 # ── 目录 ─────────────────────────────────────────────────────────────────────
 DATA_DIR = _resolve_path("ZCODE_DATA_DIR", "data")
 # 账号与设置持久化到本地 SQLite（与 grok2api 的 local 后端一致）
@@ -75,6 +88,28 @@ CAPTCHA_SOLVE_RETRIES = _int("ZCODE_CAPTCHA_RETRIES", 4)
 # 每次求解超时（秒）：真浏览器含 launch（内存压力下可 30s+）+ SDK 加载 + 无痕验证，
 # 且 solver 进程内自旋重试 3 次（约 40s×3），须容得下
 CAPTCHA_SOLVE_TIMEOUT = _int("ZCODE_CAPTCHA_TIMEOUT", 240)
+
+# 运维逃生门：上游 client/configs 下发坏配置（实测 prefix=no8xfe / region=sgp
+# 被阿里云无痕验证以 F009 全拒）时，用环境变量强制三元组。每次读取都现取
+# os.environ（不用模块级常量），测试与运行期改 env 才立即生效。
+# 注意：region 覆盖不只喂 solver，它会随 _Token.region 上报上游 Z.AI 的
+# X-Aliyun-Captcha-Verify-Region 头（claim.py:_claim_headers、agent.py:build_request）。
+CAPTCHA_OVERRIDE_ENVS = {
+    "prefix": "ZCODE_CAPTCHA_PREFIX",
+    "region": "ZCODE_CAPTCHA_REGION",
+    "sceneId": "ZCODE_CAPTCHA_SCENE_ID",
+}
+
+
+def captcha_env_overrides() -> dict[str, str]:
+    """返回真正生效的 captcha env 覆盖：{prefix|region|sceneId: 值}，未设置/空白不出现。"""
+    overrides = {}
+    for field, env_name in CAPTCHA_OVERRIDE_ENVS.items():
+        value = _env_text(env_name)
+        if value:
+            overrides[field] = value
+    return overrides
+
 
 # ── 用量监控 ─────────────────────────────────────────────────────────────────
 # 后台自动刷新账号额度的间隔（秒）。0 表示关闭后台轮询，仅按需刷新。

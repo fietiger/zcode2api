@@ -161,8 +161,28 @@ JWT 账号调用上游时需携带阿里云无痕验证参数（请求头 `X-Ali
 | `ZCODE_NODE_PATH` | node | 验证码求解所用 Node 可执行文件 |
 | `ZCODE_CAPTCHA_RETRIES` | 4 | 单次求解失败重试次数 |
 | `ZCODE_CAPTCHA_TIMEOUT` | 40 | 单次求解超时（秒）|
+| `ZCODE_CAPTCHA_PREFIX` | 空 | 逃生门：强制覆盖求解 prefix（上游下发坏配置时用，见下）|
+| `ZCODE_CAPTCHA_REGION` | 空 | 逃生门：强制覆盖 region，同时改变上报上游的 region 头 |
+| `ZCODE_CAPTCHA_SCENE_ID` | 空 | 逃生门：强制覆盖 sceneId |
 | `CAPTCHA_CACHE_TTL` | 45000 | 验证码结果缓存时长（ms）|
 | `ZAI_UPSTREAM_URL` / `ZAI_FALLBACK_URL` / `BIGMODEL_UPSTREAM_URL` | — | 上游端点覆盖 |
+
+### 验证码逃生门（`ZCODE_CAPTCHA_PREFIX` / `REGION` / `SCENE_ID`）
+
+优先级：环境变量 > 上游 `client/configs` > `constants.CAPTCHA_DEFAULTS`；空值/纯空白视为未设置，
+自动值会 strip 后才进求解器参数。三者对自动求解（`app/captcha.py`）与手动领取
+（`/admin/api/claim/captcha-config`）同时生效。
+
+- 何时用：上游配置断供时（2026-10 实测 `prefix=no8xfe` + `region=sgp` 被阿里云无痕验证以
+  F009 判 bot 全拒，token 池断供 → 所有 zai 请求 500）。
+- 填什么：`ZCODE_CAPTCHA_PREFIX=8ab4`、`ZCODE_CAPTCHA_REGION=cn`、
+  `ZCODE_CAPTCHA_SCENE_ID=11xygtvd`（当前实测可过组合）。
+- 注意：`REGION` 不只喂求解器，它会作为 `X-Aliyun-Captcha-Verify-Region` 上报上游 Z.AI
+  （`claim.py` / `agent.py`），改错值会让领取与对话一起被 3007 拒。
+- 何时撤：上游配置恢复可过后务必撤掉（删掉 .env 里这三行并重启），否则本地永久锁死在旧
+  prefix/scene 上，后续正常轮换反而会被拒。生效期间日志里会有一条
+  `prefix/region/sceneId 被环境变量强制覆盖: ...` 的 warn，可作为「仍在逃生门模式」的观测点。
+
 
 ## 开发与测试
 

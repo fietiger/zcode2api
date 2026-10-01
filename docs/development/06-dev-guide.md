@@ -90,6 +90,7 @@ stdout_logfile=/personal/zcode-hub/logs/out.log
 |------|------|
 | 全部请求 503 no_available_account | `GET /admin/api/pool` 看状态分布；`billing` 端点 401 多为 JWT 过期（需重登）而非无额度 |
 | 验证码连续失败 | 确认 `captcha_node/node_modules` 已装；`ZCODE_CAPTCHA_TIMEOUT` 调大；阿里云指纹逻辑变更时需更新 solver.js 的浏览器 API 桩 |
+| token 池断供、全部请求 500（验证码被 F009 拒） | 多为上游 `client/configs` 下发坏 prefix/region（2026-10 实测 `no8xfe`+`sgp` 全拒）。设逃生门 `ZCODE_CAPTCHA_PREFIX=8ab4` / `ZCODE_CAPTCHA_REGION=cn` / `ZCODE_CAPTCHA_SCENE_ID=11xygtvd` 后重启（自动求解与手动领取同时生效，`REGION` 会一并改上报上游的 region 头）；日志出现「prefix/region/sceneId 被环境变量强制覆盖」即为逃生门模式，上游恢复后务必撤掉 |
 | 额度一直是 0 / 401 | WAF 拦截：检查是否带全套身仿真头；错峰参数是否被调成 0 |
 | 领取一直 ineligible | `identity.appVersion` 低于活动要求，升级配置值 |
 | .zsb 导入解密失败 | 口令错误（错口令即失败无提示，是设计行为）；确认 KDF 迭代未被改 |
