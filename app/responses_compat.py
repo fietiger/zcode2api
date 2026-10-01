@@ -102,8 +102,15 @@ def responses_to_anthropic(payload: dict) -> tuple[dict | None, str | None]:
                 _append_text("user", blocks)
         elif itype == "function_call":
             args = item.get("arguments")
-            if not isinstance(args, str):
-                args = json.dumps(args or {}, ensure_ascii=False)
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {"_raw": args}
+            if args is None:
+                args = {}
+            elif not isinstance(args, dict):
+                args = {"_raw": args}
             _append_text("assistant", [{
                 "type": "tool_use",
                 "id": str(item.get("call_id") or item.get("id") or f"toolu_{uuid.uuid4().hex[:16]}"),
@@ -246,7 +253,9 @@ class ResponsesStreamConverter:
     """Anthropic SSE 事件流 → OpenAI Responses 事件流（有状态转换器）。
 
     用法：先 start() 产出 response.created，逐条 feed(event_dict) 收输出行，
-    流结束后无需追加（completed 事件由 message_stop 触发）。
+    流收尾时调用 finish_fallback() 兜底补发终态事件（message_stop 已正常
+    处理时返回空，流被截断/异常时补 response.incomplete/response.failed），
+    保证客户端不会挂等终态。
     """
 
     def __init__(self, model: str) -> None:
@@ -258,6 +267,8 @@ class ResponsesStreamConverter:
         self.usage = {"input_tokens": None, "output_tokens": None}
         self.output_items: list[dict] = []
         self._block: dict | None = None  # 当前未闭合的输出项状态
+        self._started = False  # 是否收到过 message_start（有真实进度）
+        self._terminal_emitted = False  # 是否已发出 completed/incomplete/failed
 
     def _event(self, etype: str, payload: dict) -> str:
         self.seq += 1
@@ -268,12 +279,34 @@ class ResponsesStreamConverter:
         return _response_object(self.response_id, self.created, self.model,
                                 self.output_items, self.usage, self.stop_reason)
 
+    def _incomplete_response(self) -> dict:
+        obj = self._response()
+        obj["status"] = "incomplete"
+        obj.pop("incomplete_details", None)  # 截断非 max_tokens，不套该 reason
+        return obj
+
     def start(self) -> str:
         return self._event("response.created", {"response": self._response()})
+
+    def finish_fallback(self, *, failed: bool = False) -> list[str]:
+        """流收尾兜底：仅在尚未发出终态事件时补发一个，幂等。
+
+        failed=True（异常分支）→ response.failed；正常 EOF 截断：有真实进度
+        （收到过 message_start）→ response.incomplete，否则 → response.failed。
+        """
+        if self._terminal_emitted:
+            return []
+        self._terminal_emitted = True
+        if failed or not self._started:
+            obj = self._response()
+            obj["status"] = "failed"
+            return [self._event("response.failed", {"response": obj})]
+        return [self._event("response.incomplete", {"response": self._incomplete_response()})]
 
     def feed(self, evt: dict) -> list[str]:
         etype = evt.get("type")
         if etype == "message_start":
+            self._started = True
             u = (evt.get("message") or {}).get("usage") or {}
             self.usage["input_tokens"] = _as_int(u.get("input_tokens"))
             return []
@@ -351,8 +384,10 @@ class ResponsesStreamConverter:
             return []
         if etype == "message_stop":
             # message_stop 前 content_block_stop 已把所有项收进 output_items
+            self._terminal_emitted = True
             return [self._event("response.completed", {"response": self._response()})]
         if etype == "error":
+            self._terminal_emitted = True
             err = evt.get("error") or {}
             return [self._event("response.failed", {"response": self._response(),
                                                     "error": err if isinstance(err, dict) else {"message": str(err)}})]

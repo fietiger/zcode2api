@@ -381,6 +381,8 @@ def _responses_stream_response(up: _Upstream, model: str, req_id: str) -> Stream
                 if isinstance(evt, dict):
                     for out in conv.feed(evt):
                         yield out
+            for out in conv.finish_fallback():
+                yield out
             logs.req_ok(req_id)
             reqlog.finish_ok(req_id, t_first=up.t_first, status=up.resp.status_code,
                              input_tokens=conv.usage.get("input_tokens"),
@@ -391,6 +393,8 @@ def _responses_stream_response(up: _Upstream, model: str, req_id: str) -> Stream
         except Exception as err:  # noqa: BLE001
             logs.req_err(req_id, f"流传输中断: {err}")
             reqlog.finish_error(req_id, f"流传输中断: {err}", t_first=up.t_first)
+            for out in conv.finish_fallback(failed=True):
+                yield out
         finally:
             await up.close()
 
