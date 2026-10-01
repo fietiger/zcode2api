@@ -7,6 +7,6 @@
   "main": "solver_pw.js",
   "dependencies": {
     "happy-dom": "^20.14.0",
-    "puppeteer-core": "^23.0.0"
+    "puppeteer-core": "^23.11.1"
   }
 }

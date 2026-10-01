@@ -201,9 +201,11 @@ class CaptchaManager:
 
     # ── 求解 ─────────────────────────────────────────────────────────────────
     async def _solve_one(self, config: dict) -> _Token | None:
-        scene = config.get("sceneId") or constants.CAPTCHA_DEFAULTS["sceneId"]
-        region = config.get("region") or constants.CAPTCHA_DEFAULTS["region"]
-        prefix = config.get("prefix") or constants.CAPTCHA_DEFAULTS["prefix"]
+        import os
+        # 环境变量强制覆盖（运维逃生门：上游下发坏配置时手动切 prefix/region）
+        prefix = os.getenv("ZCODE_CAPTCHA_PREFIX") or config.get("prefix") or constants.CAPTCHA_DEFAULTS["prefix"]
+        region = os.getenv("ZCODE_CAPTCHA_REGION") or config.get("region") or constants.CAPTCHA_DEFAULTS["region"]
+        scene  = config.get("sceneId") or constants.CAPTCHA_DEFAULTS["sceneId"]
 
         last_err: str | None = None
         for attempt in range(1, settings.CAPTCHA_SOLVE_RETRIES + 1):
