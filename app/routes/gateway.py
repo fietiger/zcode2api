@@ -10,6 +10,7 @@ import asyncio
 import json
 import secrets
 import time
+from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -19,10 +20,11 @@ from .. import constants, logs, reqlog, settings
 from ..agent import build_request
 from ..auth_admin import verify_gateway_key
 from ..captcha import captcha_manager
+from ..gemini_compat import GeminiStreamConverter, anthropic_to_gemini, gemini_error, gemini_to_anthropic
 from ..models import Account, Status
 from ..openai_compat import StreamConverter, anthropic_to_openai, openai_to_anthropic
-from ..responses_compat import ResponsesStreamConverter, anthropic_to_responses, responses_to_anthropic
 from ..quota import fetch_quota
+from ..responses_compat import ResponsesStreamConverter, anthropic_to_responses, responses_to_anthropic
 from ..store import store
 
 _sleep = asyncio.sleep  # 模块级引用：测试可 patch 此名而免污染全局 asyncio
@@ -288,8 +290,11 @@ async def chat_completions(request: Request):
         await result.close()
     data = _safe_json(raw.decode("utf-8", "ignore"))
     if not isinstance(data, dict) or data.get("type") != "message":
-        reqlog.finish_error(req_id, "上游响应格式异常", status=502, t_first=result.t_first)
-        return JSONResponse({"error": {"message": "上游响应格式异常", "type": "upstream_error"}}, status_code=502)
+        err_msg = "上游响应格式异常"
+        if isinstance(data, dict):
+            err_msg = data.get("msg") or data.get("message") or (data.get("error") or {}).get("message") or "上游响应格式异常"
+        reqlog.finish_error(req_id, str(err_msg), status=502, t_first=result.t_first)
+        return JSONResponse({"error": {"message": str(err_msg), "type": "upstream_error"}}, status_code=502)
     usage = data.get("usage") or {}
     reqlog.finish_ok(req_id, t_first=result.t_first, status=result.resp.status_code,
                      input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
@@ -362,6 +367,155 @@ async def responses_api(request: Request):
     reqlog.finish_ok(req_id, t_first=result.t_first, status=result.resp.status_code,
                      input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
     return JSONResponse(anthropic_to_responses(data, model))
+
+
+async def _gemini_request_guard(request: Request):
+    """Gemini 端点公共前置：JSON 解析 + 失败即返回 (payload, None) / (None, JSONResponse)。"""
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None, JSONResponse(gemini_error(400, "请求体不是合法 JSON"), status_code=400)
+    if not isinstance(payload, dict):
+        return None, JSONResponse(gemini_error(400, "请求体必须是 JSON 对象"), status_code=400)
+    return payload, None
+
+
+def _normalize_gemini_model(model_path: str) -> str:
+    """路径段模型名归一化：URL 编码还原 + 小写别名映射 + 前缀剥离。"""
+    name = unquote(model_path or "").strip()
+    if "/" in name:
+        name = "/".join(name.split("/")[1:]) or name  # models/glm-5.3 → glm-5.3
+    return MODEL_NAME_MAP.get(name.lower(), name)
+
+
+async def _gemini_dispatch_and_respond(
+    request: Request, payload: dict, model_path: str, endpoint_label: str,
+):
+    """Gemini 端点公共主体：转换 → _dispatch → 流式/非流式响应。"""
+    model = _normalize_gemini_model(model_path)
+    body, err = gemini_to_anthropic(payload, model)
+    if err or body is None:
+        return JSONResponse(gemini_error(400, err or "请求体不合法"), status_code=400)
+    # alt=sse → 上游 Anthropic 侧也走流式（agy 网关模式固定带 alt=sse）
+    if request.query_params.get("alt") == "sse":
+        body["stream"] = True
+
+    incoming_headers = dict(request.headers)
+    provider = _detect_provider(body, request.headers)
+    body = _normalize_body(body)
+    port = request.url.port or settings.PORT
+
+    req_id = secrets.token_hex(8)
+    logs.req(req_id, str(body.get("model") or "-"), True, _last_user_text(body))
+    reqlog.begin(req_id, endpoint_label, str(body.get("model") or "-"), True, _last_user_text(body))
+
+    try:
+        result = await _dispatch(req_id, body, incoming_headers, port, provider)
+    except asyncio.CancelledError:
+        reqlog.finish_error(req_id, "客户端断开", status=499)
+        raise
+    except Exception as err:  # noqa: BLE001 - 调度层意外异常也要收口监控条目
+        reqlog.finish_error(req_id, f"网关内部错误: {err}", status=500)
+        return JSONResponse(gemini_error(500, "网关内部错误"), status_code=500)
+    if not isinstance(result, _Upstream):
+        # 调度层错误（401/402/429/5xx/503 等）是 Anthropic 错误形态，
+        # 统一重包成 Gemini error body（agy 按 status 分支重试策略）
+        raw = json.loads(result.body.decode("utf-8")) if result.body else {}
+        err_body = raw.get("error") if isinstance(raw, dict) else None
+        message = str(err_body.get("message") or "上游错误") if isinstance(err_body, dict) else "上游错误"
+        return JSONResponse(gemini_error(result.status_code or 500, message),
+                            status_code=result.status_code or 500)
+
+    model = str(body.get("model") or "")
+    if request.query_params.get("alt") == "sse":
+        try:
+            return _gemini_stream_response(result, model, req_id)
+        except asyncio.CancelledError:
+            await result.close()
+            raise
+
+    try:
+        raw = await result.resp.aread()
+        logs.req_ok(req_id)
+    except asyncio.CancelledError:
+        reqlog.finish_error(req_id, "客户端断开", status=499, t_first=result.t_first)
+        raise
+    except Exception as err:  # noqa: BLE001
+        logs.req_err(req_id, f"读取上游响应失败: {err}")
+        reqlog.finish_error(req_id, f"读取上游响应失败: {err}", status=502)
+        return JSONResponse(gemini_error(502, f"读取上游响应失败: {err}"), status_code=502)
+    finally:
+        await result.close()
+    data = _safe_json(raw.decode("utf-8", "ignore"))
+    if not isinstance(data, dict) or data.get("type") != "message":
+        err_msg = "上游响应格式异常"
+        if isinstance(data, dict):
+            err_msg = data.get("msg") or data.get("message") or (data.get("error") or {}).get("message") or "上游响应格式异常"
+        reqlog.finish_error(req_id, str(err_msg), status=502, t_first=result.t_first)
+        return JSONResponse(gemini_error(502, str(err_msg)), status_code=502)
+    usage = data.get("usage") or {}
+    reqlog.finish_ok(req_id, t_first=result.t_first, status=result.resp.status_code,
+                     input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
+    return JSONResponse(anthropic_to_gemini(data, model))
+
+
+@router.post("/v1beta/models/{model_path}:streamGenerateContent", dependencies=[Depends(verify_gateway_key)])
+async def stream_generate_content(model_path: str, request: Request):
+    """Gemini generateContent 流式端点（agy CLI 网关模式客户端）。
+
+    Starlette 路径字面量后缀：{model_path} 后直接跟 :streamGenerateContent，
+    冒号不参与路径参数匹配。?alt=sse 由客户端固定携带。
+    """
+    payload, err = await _gemini_request_guard(request)
+    if err is not None:
+        return err
+    return await _gemini_dispatch_and_respond(request, payload, model_path, "gemini-stream")
+
+
+@router.post("/v1beta/models/{model_path}:generateContent", dependencies=[Depends(verify_gateway_key)])
+async def generate_content(model_path: str, request: Request):
+    """Gemini generateContent 非流式端点（agy 目前只用流式，补齐以防）。"""
+    payload, err = await _gemini_request_guard(request)
+    if err is not None:
+        return err
+    return await _gemini_dispatch_and_respond(request, payload, model_path, "gemini")
+
+
+def _gemini_stream_response(up: _Upstream, model: str, req_id: str) -> StreamingResponse:
+    """把上游 Anthropic SSE 事件流转换为 Gemini GenerateContentResponse SSE 流。"""
+    conv = GeminiStreamConverter(model)
+
+    async def _iter():
+        try:
+            async for line in up.resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if not data_str:
+                    continue
+                evt = _safe_json(data_str)
+                if isinstance(evt, dict):
+                    for out in conv.feed(evt):
+                        yield out
+            for out in conv.finish_fallback():
+                yield out
+            logs.req_ok(req_id)
+            reqlog.finish_ok(req_id, t_first=up.t_first, status=up.resp.status_code,
+                             input_tokens=conv.usage.get("promptTokenCount"),
+                             output_tokens=conv.usage.get("candidatesTokenCount"))
+        except asyncio.CancelledError:
+            reqlog.finish_error(req_id, "客户端断开", status=499, t_first=up.t_first)
+            raise
+        except Exception as err:  # noqa: BLE001
+            logs.req_err(req_id, f"流传输中断: {err}")
+            reqlog.finish_error(req_id, f"流传输中断: {err}", t_first=up.t_first)
+            for out in conv.finish_fallback(failed=True):
+                yield out
+        finally:
+            await up.close()
+
+    return StreamingResponse(_iter(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})
 
 
 def _responses_stream_response(up: _Upstream, model: str, req_id: str) -> StreamingResponse:

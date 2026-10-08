@@ -25,3 +25,5 @@ node_modules/
 *accounts*.json
 zcode-accounts*.json
 serve.log
+start.bat
+run.vbs
