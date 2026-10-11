@@ -23,13 +23,21 @@
     <div class="settings-row">
       <label>后台密码</label>
       <div class="hint">用于登录此管理后台。修改后需用新密码重新登录。</div>
-      <input class="input" id="admin-key" type="password" placeholder="后台密码" autocomplete="new-password">
+      <div class="settings-input-wrap">
+        <input class="input" id="admin-key" type="password" placeholder="后台密码" autocomplete="new-password">
+        <button type="button" class="settings-icon-btn" id="btn-toggle-admin-key" onclick="toggleSecretVisibility('admin-key')">显示</button>
+        <button type="button" class="settings-icon-btn" onclick="copySecret('admin-key')">复制</button>
+      </div>
       <div class="hint" id="admin-key-default-hint" style="display:none;color:var(--amber)">当前仍是默认口令，生产环境请立即更换。</div>
     </div>
     <div class="settings-row">
       <label>网关 API Key（可选）</label>
       <div class="hint">设置后，调用 <code>/v1/messages</code> 须携带 <code>Authorization: Bearer &lt;key&gt;</code> 或 <code>x-api-key</code>。清空并保存可关闭校验（生产必须配置）。输入框显示掩码，未改动保存不会覆盖原值。</div>
-      <input class="input" id="gateway-key" type="password" placeholder="留空表示不启用" autocomplete="new-password">
+      <div class="settings-input-wrap">
+        <input class="input" id="gateway-key" type="password" placeholder="留空表示不启用" autocomplete="new-password">
+        <button type="button" class="settings-icon-btn" id="btn-toggle-gateway-key" onclick="toggleSecretVisibility('gateway-key')">显示</button>
+        <button type="button" class="settings-icon-btn" onclick="copySecret('gateway-key')">复制</button>
+      </div>
     </div>
     <div class="settings-row">
       <label>额度刷新间隔（秒）</label>
@@ -87,6 +95,48 @@ async function load(){
   }catch(e){showToast('加载失败: '+e.message,'error');}
 }
 
+let _secretsCache = null;
+
+async function _ensureSecrets(){
+  if(_secretsCache) return _secretsCache;
+  _secretsCache = await api('GET', '/settings/secrets');
+  return _secretsCache;
+}
+
+async function toggleSecretVisibility(id){
+  const el = document.getElementById(id);
+  const btn = document.getElementById('btn-toggle-' + id);
+  if(!el) return;
+  if(el.type === 'password'){
+    try{
+      const s = await _ensureSecrets();
+      const val = id === 'admin-key' ? s.admin_key : s.gateway_key;
+      el.value = val || '';
+      el.type = 'text';
+      if(btn) btn.textContent = '隐藏';
+    }catch(e){
+      showToast('获取明文失败: ' + e.message, 'error');
+    }
+  }else{
+    el.type = 'password';
+    if(btn) btn.textContent = '显示';
+  }
+}
+
+async function copySecret(id){
+  try{
+    const s = await _ensureSecrets();
+    const val = id === 'admin-key' ? s.admin_key : s.gateway_key;
+    if(!val){
+      return showToast('当前 Key 为空', 'error');
+    }
+    await navigator.clipboard.writeText(val);
+    showToast('已复制到剪贴板', 'success');
+  }catch(e){
+    showToast('复制失败: ' + e.message, 'error');
+  }
+}
+
 function _isSecretMask(v){
   return v.includes('…') || v === '••••';
 }
@@ -106,6 +156,7 @@ async function saveSettings(){
   if(!_isSecretMask(gateway_key)) payload.gateway_key=gateway_key;
   try{
     await api('PUT','/settings',payload);
+    _secretsCache = null; // 清除缓存以同步新值
     if(payload.admin_key) await adminKey.set(payload.admin_key);
     showToast('已保存','success');
   }catch(e){showToast('保存失败: '+e.message,'error');}

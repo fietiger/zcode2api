@@ -248,6 +248,10 @@ select.input option{background:var(--panel);color:var(--ink)}
 .settings-row:last-child{margin-bottom:0}
 .settings-row label{font-size:13px;font-weight:600}
 .settings-row .hint{font-size:12px;color:var(--ink-mute);line-height:1.7}
+.settings-input-wrap{display:flex;gap:6px;align-items:center}
+.settings-input-wrap .input{flex:1;min-width:0}
+.settings-icon-btn{height:36px;padding:0 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--hairline);color:var(--ink-dim);font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;transition:all .15s}
+.settings-icon-btn:hover{color:var(--ink);border-color:#3a3e48;background:var(--panel)}
 
 /* Footer */
 .site-footer{position:fixed;right:18px;bottom:10px;z-index:40;display:inline-flex;align-items:center;gap:6px;color:rgba(233,231,225,.22);font-size:11px;font-weight:500}

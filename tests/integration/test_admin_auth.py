@@ -87,3 +87,14 @@ class TestSettingsSecretMask:
         assert res.status_code == 200
         assert fresh_app.admin_key() == "keep-this-admin-key"
         assert fresh_app.account_concurrency() == 3
+
+    async def test_get_settings_secrets(self, gateway_client, fresh_app):
+        client, _ = gateway_client
+        fresh_app.set_setting("admin_key", "my-admin-pass")
+        fresh_app.set_setting("gateway_key", "sk-live-test")
+        res = await client.get("/admin/api/settings/secrets",
+                               headers={"Authorization": "Bearer my-admin-pass"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["admin_key"] == "my-admin-pass"
+        assert data["gateway_key"] == "sk-live-test"

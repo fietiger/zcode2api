@@ -589,6 +589,15 @@ async def get_settings():
     }
 
 
+@router.get("/settings/secrets")
+async def get_settings_secrets():
+    """获取设置中的原始明文密钥（管理端有权限查看与复制）。"""
+    return {
+        "admin_key": store.admin_key() or "",
+        "gateway_key": store.gateway_key() or "",
+    }
+
+
 @router.put("/settings")
 async def update_settings(payload: dict = Body(...)):
     if "admin_key" in payload:
